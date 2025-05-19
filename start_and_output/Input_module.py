@@ -33,6 +33,6 @@ def get_features(config):
 		'labels': tf.io.FixedLenFeature([config.max_seq_length], tf.int64),
 	}
 	data_set = dataset.map(_parse_example)
-	dataset = data_set.shuffle(buffer_size=config.buffer_size).repeat().batch(config.batch_size, drop_remainder=True).cache()
+	dataset = data_set.shuffle(buffer_size=config.buffer_size).repeat().batch(config.batch_size, drop_remainder=True)
 	print(f"def get_features: {dataset=}")
 	return dataset

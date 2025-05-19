@@ -16,7 +16,7 @@ class Config:
 		
 		# 2): my test operation
 		"""operation"""
-		self.data_operation: str = 'length'
+		self.data_operation: str = 'normal'
 		self.hidden_operation: str = 'normal'
 		"""hidden operation include normal, CLS, only_focus, pooled"""
 		self.mask_operation: bool = False
@@ -31,23 +31,23 @@ class Config:
 		# 3): Input Module
 		if input_files is None:
 			file_dir = './data_make/data/target'
-			self.target_name: str = 'ca'
-			self.train_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/train.tfrecord'
-			self.test_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/test.tfrecord'
+			self.target_name: str = 'fe2'
+			self.train_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/train/train_fragment.tfrecord'
+			self.test_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/test/test_fragment.tfrecord'
 		else:
 			self.train_file: str = input_files.get('train_file')
 			self.test_file: str = input_files.get('test_file')
 		print(f"{self.train_file=}, {self.test_file=}")
-		self.batch_size: int = 4
+		self.batch_size: int = 20 if self.data_operation == 'normal' else 4
 		self.buffer_size: int = 1000000
-		self.max_seq_length: int = 800
-		self.input_label_size: int = 800
+		self.max_seq_length: int = 27 if self.data_operation == 'normal' else 800
+		self.input_label_size: int = self.max_seq_length
 		
 		# 4): Run Set
 		self.train: bool = train
 		self.train_epochs: int = 1   # 5
-		self.steps_per_epoch: int = 40
-		self.per_eval_steps: int = 100
+		self.steps_per_epoch: int = 2
+		self.per_eval_steps: int = 2
 		
 		# 5): Mask
 		self.mask_prob: float = 0.15
@@ -69,7 +69,7 @@ class Config:
 			self.metrics_save_path: str = input_files.get('metrics_save_path')
 		self.return_metrics: str = 'auc'
 		self.thresholds: float = 0.5
-		self.save_weights_path: str = './Models_hub/save_model'
+		self.save_weights_path: str = './Models_hub/save_model.h5'
 		
 	def _init_tunable_params(self):
 		if self._hp is None:

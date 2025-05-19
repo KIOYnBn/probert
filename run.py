@@ -14,22 +14,23 @@ def initial() -> None:
 	with open('./results/metrics.txt', 'w') as f:
 		f.write('')
 		
-
+		
 @tf.function
-def main(input_files: Union[dict, bool] = None, train: bool = True) -> None:
+def main(input_files: Union[dict, bool] = None, train: bool = False) -> None:
 	config: Config = Config(input_files=input_files, train=train)
 	model: ProbertModel = ProbertModel(config)
 	optimizer: tf.keras.optimizers = create_optimizer(config)
-	model.compile(
-		optimizer=optimizer,
-		loss=compute_loss,
-		metrics=ComputeMetrics(
-			save_path=config.metrics_save_path,
-			return_metrics=config.return_metrics,
-			thresholds=config.thresholds)
-	)
+	
 	if config.train:
 		print(f"{'='*40}\n{'Train':^40}\n{'='*40}")
+		model.compile(
+			optimizer=optimizer,
+			loss=compute_loss,
+			metrics=ComputeMetrics(
+				save_path=config.metrics_save_path,
+				return_metrics=config.return_metrics,
+				thresholds=config.thresholds)
+		)
 		data_train: tf.data.Dataset = get_dataset(config)
 		model.fit(
 			data_train,
@@ -38,16 +39,23 @@ def main(input_files: Union[dict, bool] = None, train: bool = True) -> None:
 		)
 		model.summary()
 		print(f'{model.summary()}:summary')
-		model.save_weights(config.save_weights_path, overwrite=True, save_format='tf')  # 仅保存权重
+		model.save_weights(config.save_weights_path, overwrite=True, save_format='h5')  # 仅保存权重
 		print('model saved')
 		initial()
 	else:
 		print(f"{'='*40}\n{'Test':^40}\n{'='*40}")
+		model.compile(
+			loss=compute_loss,
+			metrics=ComputeMetrics(
+				save_path=config.metrics_save_path,
+				return_metrics=config.return_metrics,
+				thresholds=config.thresholds)
+		)
 		data_eval: tf.data.Dataset = get_dataset(config)
 		for batch_size in data_eval.take(1):
 			model(batch_size[0])
 		initial()
-		model.load_weights(config.save_weights_path, )
+		model.load_weights(config.save_weights_path)
 		model.evaluate(data_eval, steps=config.per_eval_steps)
 		print('model is evaluated')
 		
