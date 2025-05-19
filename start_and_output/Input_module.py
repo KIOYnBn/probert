@@ -1,6 +1,7 @@
 import tensorflow as tf
 
 
+@tf.function
 def get_features(config):
 	"""
 	DESCRIPTION:
@@ -11,8 +12,11 @@ def get_features(config):
 	
 	def _parse_example(input_example):
 		examples = tf.io.parse_single_example(input_example, features=feature_description)
-		labels = examples['labels']
-		return {'protein_name': examples['protein_name'], 'input_ids': examples['input_ids'], 'input_mask': examples['input_mask'], 'labels': labels}, labels
+		return {
+			'protein_name': examples['protein_name'],
+			'input_ids': examples['input_ids'],
+			'input_mask': examples['input_mask'],
+			'labels': examples['labels']}, examples['labels']
 	
 	# make sure the file path
 	if config.train:
@@ -29,7 +33,6 @@ def get_features(config):
 		'labels': tf.io.FixedLenFeature([config.max_seq_length], tf.int64),
 	}
 	data_set = dataset.map(_parse_example)
-	dataset = data_set.shuffle(buffer_size=config.buffer_size).repeat().batch(config.batch_size, drop_remainder=True)
-	print(dataset)
+	dataset = data_set.shuffle(buffer_size=config.buffer_size).repeat().batch(config.batch_size, drop_remainder=True).cache()
+	print(f"def get_features: {dataset=}")
 	return dataset
-	

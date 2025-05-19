@@ -1,7 +1,23 @@
-from icecream import ic
+import os
 
 
-def creat_fasta(input_file, output_file):
+def filtration(input_file: str, output_file: str) -> None:
+	protein_context = []
+	with open(input_file, 'r') as fasta_file:
+		for line in fasta_file:
+			if line.startswith('>'):
+				name = line.strip().split("\t")[0]
+				seq = next(fasta_file).strip()
+				sites = next(fasta_file).strip()
+				protein_line = name + "\n" + seq + "\n" + sites + "\n"
+				if len(seq) < 800-2:
+					protein_context.append(protein_line)
+	with open(output_file, "w") as new_file:
+		for protein in protein_context:
+			new_file.write(protein)
+
+
+def creat_fasta(input_file: str, output_file: str) -> None:
 	"""
 	DESCRIPTION:
 		due to the original txt or fasta include the bind site,
@@ -18,19 +34,17 @@ def creat_fasta(input_file, output_file):
 				seq = next(fasta_file).strip()
 				protein_line = name + "\n" + seq + "\n"
 				protein_context.append(protein_line)
-				ic(seq)
 	with open(output_file, "w") as new_file:
-		ic(1)
 		for protein in protein_context:
 			new_file.write(protein)
 
 
-def read_bind_site(bind_site_file):
+def read_bind_site(bind_site_file:str) -> dict:
 	"""
 	DESCRIPTION:
 		get bind site from original txt or fasta
 	:param bind_site_file: the txt or fasta file of protein including bind site
-	:return:
+	:return:dict. {name:bind site}
 	"""
 	protein_dict = dict()
 	with open(bind_site_file, 'r') as bind_site_file:
@@ -43,12 +57,12 @@ def read_bind_site(bind_site_file):
 	return protein_dict
 
 
-def read_fasta(fasta_file):
+def read_fasta(fasta_file: str) -> dict:
 	"""
 	DESCRIPTION:
 		get sequence
 	:param fasta_file:
-	:return: dict
+	:return: dict, {name:seq}
 	"""
 	protein_dict = dict()
 	with open(fasta_file, 'r') as fasta_file:
@@ -60,7 +74,7 @@ def read_fasta(fasta_file):
 	return protein_dict
 
 
-def creat_ready_fasta(seqs, bind_sites, save_path):
+def creat_ready_fasta(seqs: dict, bind_sites: dict, save_path: str) -> None:
 	"""
 	DESCRIPTION:
 		add bind sites to ready cd-hit fasta
@@ -72,13 +86,12 @@ def creat_ready_fasta(seqs, bind_sites, save_path):
 	protein_line = ''
 	for name, seq in seqs.items():
 		bind_site = bind_sites[name]
-		ic(name, seq, bind_site)
 		protein_line += name + "\n" + seq + "\n" + bind_site + "\n"
 	with open(save_path, 'w') as ready_fasta:
 		ready_fasta.write(protein_line)
 
 
-def slice_fragment(input_file, output_file, focus):
+def slice_fragment(input_file: str, output_file: str, focus: list[str]) -> None:
 	"""
 	DESCRIPTION:
 		slice length==25 fragemnt of protein sequence.
@@ -101,14 +114,11 @@ def slice_fragment(input_file, output_file, focus):
 						if max(0, position - 12) >= 0 and max(len(seq), position + 13) <= len(seq):
 							if '1' not in site[position - 12:position] and '1' not in site[position + 1:position + 13]:
 								label = site[position - 12:position + 13]
-								ic(label)
 								fragment_line = seq[position - 12:position + 13]
 								if len(fragment_line) == 25:
 									if site[position] != "0":
-										ic("label:1")
 										positive_fragment += name + "\n" + fragment_line + "\n" + label + "\n"
 									else:
-										ic("label:0")
 										negative_fragment += name + "\n" + fragment_line + "\n" + label + '\n'
 	with open(f'{output_file}/positive_fragment', 'w') as positive_file:
 		positive_file.write(positive_fragment)
@@ -116,7 +126,7 @@ def slice_fragment(input_file, output_file, focus):
 		negative_file.write(negative_fragment)
 
 
-def slice_train(input_path, save_dir):
+def slice_train(input_path: str, save_dir: str, label_type: str) -> None:
 	import random
 	with open(input_path, 'r') as f_pro:
 		lines = f_pro.readlines()
@@ -125,11 +135,11 @@ def slice_train(input_path, save_dir):
 		eval_length = len(numbers) * 3 // 10
 		selected = random.sample(numbers, eval_length)
 		print(selected)
-		with open(f'{save_dir}/test_fragment.txt', 'w') as f_test:
+		with open(f'{save_dir}/test_{label_type}_fragment.txt', 'w') as f_test:
 			for line_index in selected:
 				line = lines[line_index] + lines[line_index + 1] + lines[line_index + 2]
 				f_test.write(line)
-		with open(f'{save_dir}/train_fragment.txt', 'w') as f_train:
+		with open(f'{save_dir}/train_{label_type}_fragment.txt', 'w') as f_train:
 			for line_index in numbers:
 				if line_index in selected:
 					continue
@@ -138,7 +148,7 @@ def slice_train(input_path, save_dir):
 					f_train.write(line)
 
 
-def integrate_train_or_eval(positive_file, negative_file, output_file):
+def integrate_train_or_eval(positive_file: str, negative_file: str, output_file: str) -> None:
 	with open(positive_file, 'r') as positive_file:
 		positive_lines = positive_file.readlines()
 		positive_examples_num = len(positive_lines)
@@ -154,16 +164,48 @@ def integrate_train_or_eval(positive_file, negative_file, output_file):
 				output_file.write(line)
 
 
-def main():
+def main() -> None:
 	operation = 'train or eval'
 	file_path = './data/target'
-	target = 'fe2'
+	target = 'ca'
 	residue_path = f'{file_path}/{target}'
+	if operation == 'filtration':
+		input_file = f'{residue_path}/length/allsulfate.txt'
+		output_file = f'{residue_path}/length/all.txt'
+		filtration(input_file, output_file)
 	if operation == 'train or eval':
-		input_file = f'{residue_path}/fe2_fragment.txt'
-		save_dir = residue_path
-		slice_train(input_file, save_dir)
-
-
+		label_type = 'negative'
+		input_file = f'{residue_path}/length/all.txt'
+		save_dir = f'{residue_path}/length'
+		slice_train(input_file, save_dir, label_type)
+	if operation == 'focus':
+		input_file = f'{residue_path}/fe2.fasta'
+		save_dir = f'{residue_path}/focus_centre'
+		os.makedirs(save_dir, exist_ok=True)
+		slice_fragment(input_file, save_dir, focus=["C", "D", "E", "G", "H", "K", "N", "R", "S"])
+	if operation == 'integrate':
+		train = 'test'
+		data_type = 'normal'
+		if data_type == 'normal':
+			normal_path = f'{residue_path}/normal/{train}'
+			positive_file = f'{normal_path}/positive_fragment'
+			negative_file = f'{normal_path}/negative_fragment'
+			output_file = f'{normal_path}/{train}_fragment.txt'
+			integrate_train_or_eval(positive_file, negative_file, output_file)
+			os.remove(positive_file)
+			os.remove(negative_file)
+		elif data_type == 'reduced':
+			reduced_path = f'{residue_path}/reduce/{train}'
+			reduced_types = os.listdir(reduced_path)
+			for reduce_type in reduced_types:
+				print(reduce_type)
+				positive_file = f'{reduced_path}/{reduce_type}/positive_fragment'
+				negative_file = f'{reduced_path}/{reduce_type}/negative_fragment'
+				output_file = f'{reduced_path}/{reduce_type}/{train}_fragment.txt'
+				integrate_train_or_eval(positive_file, negative_file, output_file)
+				os.remove(positive_file)
+				os.remove(negative_file)
+			
+		
 if __name__ == '__main__':
 	main()

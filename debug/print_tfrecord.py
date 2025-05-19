@@ -3,11 +3,11 @@ from Model.Configs import Config
 tf.config.run_functions_eagerly(True)
 
 
-def main():
+def main() -> None:
 	config = Config()
 	tfrecord_path = '../data_make/data/target'
-	target_name = 'fe2'
-	file_path = f'{tfrecord_path}/{target_name}/test_fragment.tfrecord'
+	target_name = 'ca'
+	file_path: str = f'{tfrecord_path}/{target_name}/length/train.tfrecord'
 	tfrecord_files = [file_path]
 	dataset = tf.data.TFRecordDataset(tfrecord_files)
 
@@ -21,11 +21,13 @@ def main():
 	def _parse_example(input_example):
 		return tf.io.parse_example(input_example, features=feature_description)
 
-	batch_size = 32
+	batch_size = 40
 	data_set = dataset.map(_parse_example)
+	print(f'{data_set}')
 	dataset = data_set.shuffle(buffer_size=1024).batch(batch_size).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
 	print(f'dataset size: {dataset}')
-	for batch in dataset.take(1):
+	count = 0
+	for batch in dataset:
 		tf.print("input_ids: ", batch['input_ids'])
 		tf.print("input_mask: ", batch['input_mask'])
 		tf.print("protein_name", batch['protein_name'])

@@ -1,87 +1,97 @@
 import tensorflow as tf
 import tensorflow.keras as keras
+from Model.mask import mask as mask_function
+from Model.dataclassutils import MaskInputs, Output, MaskedInputs
 
 
-class ProbertModel(keras.Model):
-	def __init__(self, config):
-		super(ProbertModel, self).__init__(name='ProbertModel')
+@tf.function
+class ProbertModel(tf.keras.Model):
+	def __init__(self, config) -> None:
+		super().__init__(name='ProbertModel')
+		
+		# 1): the base layer to forward
 		self.config = config
 		self.embedding = TFBertEmbedding(self.config)
 		self.encoder = TFBertcoder(self.config, name='Encoder')
 		self.mlm_layer = MaskedLmOutput(config=self.config)
 		self.decoder = TFBertcoder(self.config, name='Decoder')
-		self.pool_dense = keras.layers.Dense()
 		self.sites_loss = GetLoss(self.config)
 		
-	@staticmethod
-	def create_attention_mask_from_input_mask(input_mask):
-		shape = input_mask.shape
-		batch = shape[0]
-		length = shape[1]
-		
-		#   便于广播
-		mask = tf.cast(tf.reshape(input_mask, [batch, 1, length]), tf.float32)
-		
-		broadcast_ones = tf.ones(shape=[batch, length, 1], dtype=tf.float32)
-		
-		#   #type:list   type:[batch, length, length]
-		mask = broadcast_ones * mask
-		return mask
+		# 2): to used in custom step
+		self.generator_loss: tf.Tensor = tf.constant(0.0)
 	
-	def build(self, input_shape):
+	def build(self, input_shape) -> None:
 		pass
 	
-	def call(self, features, training=None, mask=None):
-		from Model.mask import mask
-		from Model.dataclassutils import MaskedInputs
-		input_mask_2d = features['input_mask']
-		input_mask_3d = self.create_attention_mask_from_input_mask(input_mask_2d)
+	def train_step(self, data):
+		inputs: dict
+		targets: tf.Tensor
+		inputs, targets = data
 		
-		inputs = MaskedInputs(
+		with tf.GradientTape() as tape:
+			model_output: Output = self(inputs, training=True)
+			loss: tf.Tensor = self.compiled_loss(targets, model_output.loss, regularization_losses=self.losses)
+			total_loss: tf.Tensor = self.generator_loss*0.1 + loss
+		
+		trainable_variables = self.trainable_variables
+		gradients = tape.gradient(total_loss, trainable_variables)
+		self.optimizer.apply_gradients(zip(gradients, trainable_variables))
+		self.compiled_metrics.update_state(targets, model_output.probs)
+		return {m.name: m.result() for m in self.metrics}
+	
+	
+	def test_step(self, data):
+		inputs: dict
+		targets: tf.Tensor
+		inputs, targets = data
+		model_output: Output = self(inputs, training=False)
+		loss: tf.Tensor = self.compiled_loss(targets, model_output.loss, regularization_losses=self.losses)
+		total_loss: tf.Tensor = self.generator_loss * 0.1 + loss
+		self.compiled_metrics.update_state(targets, model_output.probs)
+		return {m.name: m.result() for m in self.metrics}
+		
+	def call(self, features: dict, training=None, mask=None) -> Output:
+		# 1): mask
+		inputs: MaskInputs = MaskInputs(
 			protein_name=features['protein_name'],
 			input_ids=features['input_ids'],
-			input_mask=input_mask_2d,
-			labels=features['input_ids'],
-			masked_lm_ids=None,
-			masked_lm_weights=None,
-			masked_lm_positions=None
+			input_mask=features['input_mask'],
+			labels=features['labels'],
 		)
-		masked_inputs = mask(self.config, inputs)
+		"""must have `input_ids` and `input_mask` when using mask_function"""
+		masked_inputs: MaskedInputs = mask_function(self.config, inputs)
 		
-		masked_inputs.input_mask = input_mask_3d
+		# 2): Embedding
+		hidden: tf.Tensor
+		"""this embed_weight is the share layer represented the residue features"""
+		embed_weight: tf.Tensor
+		hidden, embed_weight = self.embedding(masked_inputs.input_ids)
 		
-		embedding_output = self.embedding(masked_inputs)
-		embedding_table = self.embedding.weight
+		# 3): generator
+		encoder_output: tf.Tensor = self.encoder((hidden, masked_inputs.input_mask))
+		masked_inputs.input_ids = encoder_output
 		
-		encoder_output = self.encoder(embedding_output)
+		# 4): Masked Output Loss Compute
+		mlm_output: Output = self.mlm_layer((masked_inputs, embed_weight))
+		self.generator_loss = mlm_output.loss
 		
-		mlm_output = self.mlm_layer((encoder_output, embedding_table))
+		# 5): discriminator
+		decoder_output: tf.Tensor = self.decoder((encoder_output, masked_inputs.input_mask))
+		masked_inputs.input_ids = decoder_output
 		
-		decoder_output = self.decoder(encoder_output)
-		
-		pooled_output = decoder_output.input_ids[:, 0]
-		pooled_output = self.pooler(pooled_output)
-		pooled_output = self.pool_dense(pooled_output)
-		encoder_output.input_ids = pooled_output
-		encoder_output.input_mask = input_mask_2d
-		sites_loss = self.sites_loss((encoder_output, embedding_table))
-		total_loss = mlm_output.loss + sites_loss
-		return total_loss
+		# 6): Site Output Loss Compute
+		sites_output: Output = self.sites_loss((masked_inputs, embed_weight))
+		return sites_output
 		
 		
 class TFBertEmbedding(keras.layers.Layer):
-	def __init__(self, config):
+	def __init__(self, config) -> None:
 		super(TFBertEmbedding, self).__init__(name='TFBertEmbedding')
 		self.config = config
 		self.weight = self.add_weight(
 			name='weight_embeddings',
 			shape=[config.vocab_size, config.hidden_dim],
-			initializer=keras.initializers.RandomNormal(stddev=self.config.initializer_range),
-		)
-		self.token_type_embedding = self.add_weight(
-			shape=[self.config.vocab_size, self.config.hidden_dim],
-			name='token_embeddings',
-			initializer=keras.initializers.TruncatedNormal(stddev=self.config.initializer_range)
+			initializer=keras.initializers.TruncatedNormal(stddev=self.config.initializer_range),
 		)
 		self.position_embedding = self.add_weight(
 			shape=[self.config.max_position_embeddings, self.config.hidden_dim],
@@ -90,67 +100,73 @@ class TFBertEmbedding(keras.layers.Layer):
 		)
 		self.layer_norm = keras.layers.LayerNormalization(name='layer_norm')
 	
-	def call(self, inputs):
-		input_ids = inputs.input_ids
-		inputs_embeds = tf.gather(params=self.weight, indices=input_ids)
-		position_ids = tf.expand_dims(tf.range(start=0, limit=input_ids.shape[1]), axis=0)
-		position_embeds = tf.gather(params=self.position_embedding, indices=position_ids)
-		finall_embedding = inputs_embeds + position_embeds
-		finall_embedding = self.layer_norm(finall_embedding)
-		inputs.input_ids = finall_embedding
-		return inputs
+	def call(self, input_ids: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+		input_ids: tf.Tensor = tf.cast(input_ids, tf.int32)
+		weight_embed: tf.Tensor = tf.gather(params=self.weight, indices=input_ids)
+		position_embed: tf.Tensor = tf.gather(self.position_embedding, indices=tf.range(input_ids.shape[1]))
+		position_embed: tf.Tensor = tf.broadcast_to(position_embed[tf.newaxis, ...], weight_embed.shape)
+		output: tf.Tensor = self.layer_norm(weight_embed+position_embed)
+		return output, self.weight
 		
 		
 class TFBertcoder(keras.layers.Layer):
-	def __init__(self, config, name):
+	def __init__(self, config, name: str) -> None:
 		super().__init__(name=name)
-		self.config = config
-		self.layers = keras.Sequential([
-			TFBertLayer(config, name=f'_layer{i}') for i in range(config.num_layers)
-		])
+		self.layers_list: list = [
+			TFBertLayer(config, name=f'Bert_layer_{num}') for num in range(config.num_layers)
+		]
 
-	def call(self, inputs):
-		output = self.layers(inputs)
-		return output
+	def call(self, inputs: tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
+		# inputs = (hidden_states, attn_mask
+		hidden_states, attn_mask = inputs
+		del inputs
+		for layer in self.layers_list:
+			layer_inputs = (hidden_states, attn_mask)
+			hidden_states = layer(layer_inputs)
+		return hidden_states
 	
 	
 class TFBertLayer(keras.layers.Layer):
-	def __init__(self, config, name):
+	def __init__(self, config, name: str) -> None:
 		super(TFBertLayer, self).__init__(name=f'TFBertLayer{name}')
-		self.config = config
 		self.attention = TFBertAttention(config, name='self_attention')
-		if self.config.have_cross_attention:
+		self.have_cross_attention: str = config.have_cross_attention
+		if self.have_cross_attention:
 			self.cross_attention = TFBertAttention(config, name='cross_attention')
 		self.intermidiate_dense = keras.layers.Dense(
-			units=self.config.intermediate_size,
-			kernel_initializer=keras.initializers.TruncatedNormal(stddev=self.config.initializer_range),
-			activation=self.config.activation,
+			units=config.intermediate_dim,
+			kernel_initializer=keras.initializers.TruncatedNormal(stddev=config.initializer_range),
+			activation=config.activation,
 			name='intermediate_dense'
 		)
 		self.output_dense = keras.layers.Dense(
-			units=self.config.hidden_dim,
-			kernel_initializer=keras.initializers.TruncatedNormal(stddev=self.config.initializer_range),
+			units=config.hidden_dim,
+			kernel_initializer=keras.initializers.TruncatedNormal(stddev=config.initializer_range),
 			name='bert_layer_output'
 		)
-		self.norm_layer = keras.layers.LayerNormalization(name='layer_norm')
+		self.norm_layer_one = keras.layers.LayerNormalization(name='layer_norm_one')
+		self.norm_layer_two = keras.layers.LayerNormalization(name='layer_norm_two')
 	
-	def call(self, inputs):
-		attention_output = self.attention(inputs)
-		if self.config.have_cross_attention:
-			attention_output = self.cross_attention(attention_output)
-		intermediate_output = self.intermidiate_dense(attention_output.input_ids)
-		output = self.output_dense(intermediate_output)
-		output = self.norm_layer(output)
-		attention_output.input_ids = output
-		return attention_output
+	def call(self, inputs: tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
+		# inputs = tuple(hidden_states, attn_mask)
+		hidden: tf.Tensor = inputs[0]
+		attn_output: tf.Tensor = self.attention(inputs)
+		attn_output: tf.Tensor = self.norm_layer_one(attn_output+hidden)
+		if self.have_cross_attention:
+			attn_output: tf.Tensor = self.cross_attention(attn_output)
+		intermediate_output: tf.Tensor = self.intermidiate_dense(attn_output)
+		output: tf.Tensor = self.output_dense(intermediate_output)
+		output: tf.Tensor = self.norm_layer_two(output)
+		return output
 		
 	
 class TFBertAttention(keras.layers.Layer):
-	def __init__(self, config, name):
+	def __init__(self, config, name: str) -> None:
 		super().__init__(name=name)
-		self.config = config
-		self.sqrt_atten_head_size = tf.sqrt(self.config.hidden_dim // self.config.n_heads)
-
+		self.n_heads = config.n_heads
+		self.head_dim = config.hidden_dim // self.n_heads
+		self.scale = tf.math.sqrt(tf.cast(self.head_dim, tf.float32))
+		
 		self.query_layer = tf.keras.layers.Dense(
 			units=config.hidden_dim,
 			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
@@ -158,123 +174,99 @@ class TFBertAttention(keras.layers.Layer):
 		)
 		self.key_layer = tf.keras.layers.Dense(
 			units=config.hidden_dim,
-			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
+			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=config.initializer_range),
 			name=f'key_layer',
 		)
 		self.value_layer = tf.keras.layers.Dense(
 			units=config.hidden_dim,
-			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
+			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=config.initializer_range),
 			name=f'value_layer',
 		)
-		self.attention_output_layer = tf.keras.layers.Dense(
-			units=config.hidden_dim,
-			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
-			name=f'attention_output_layer',
-		)
-		
 		self.softmax_layer = keras.layers.Softmax()
 		
 		self.output_dense = keras.layers.Dense(
-			units=self.config.hidden_dim,
-			kernel_initializer=keras.initializers.RandomNormal(stddev=self.config.initializer_range),
+			units=config.hidden_dim,
+			kernel_initializer=keras.initializers.TruncatedNormal(stddev=config.initializer_range),
 			name='attention_dense'
 		)
-		
-		self.norm_layer = keras.layers.LayerNormalization(name='attention_layer_norm')
 	
-	def transpose_for_scores(self, input_tensor, batch, length):
-		output_tensor = tf.reshape(input_tensor, [batch, length, self.config.n_heads, self.config.size_per_head])
-		output_tensor = tf.transpose(output_tensor, [0, 2, 1, 3])
+	def _transpose_for_scores(self, input_tensor: tf.Tensor) -> tf.Tensor:
+		batch, length, dim = input_tensor.shape
+		assert dim == self.n_heads*self.head_dim
+		output_tensor: tf.Tensor = tf.reshape(input_tensor, [batch, length, self.n_heads, self.head_dim])
+		output_tensor: tf.Tensor = tf.transpose(output_tensor, [0, 2, 1, 3])
 		return output_tensor
 	
-	def call(self, inputs):
-		input_ids = inputs.input_ids
-		input_mask = inputs.input_mask
-		batch, length, dimension = input_ids.shape
-		query = self.transpose_for_scores(self.query_layer(input_ids), batch, length)
-		key = self.transpose_for_scores(self.query_layer(input_ids), batch, length)
-		value = self.transpose_for_scores(self.key_layer(input_ids), batch, length)
+	def call(self, inputs: tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
+		hidden_states, attn_mask = inputs
+		query: tf.Tensor = self._transpose_for_scores(self.query_layer(hidden_states))
+		key: tf.Tensor = self._transpose_for_scores(self.key_layer(hidden_states))
+		value: tf.Tensor = self._transpose_for_scores(self.value_layer(hidden_states))
 		
-		attention_scores = tf.matmul(query, key, transpose_b=True)
-		attention_scores = tf.divide(attention_scores, self.sqrt_atten_head_size)
+		attn_scores: tf.Tensor = tf.matmul(query, key, transpose_b=True)
+		attn_scores: tf.Tensor = tf.divide(attn_scores, self.scale)
 		
-		attention_mask_expand = tf.expand_dims(input_mask, axis=1)
-		adder = (1.0 - attention_mask_expand) * -10000.0
+		attn_mask: tf.Tensor = tf.cast(attn_mask[:, tf.newaxis, tf.newaxis, :], tf.float32)
+		attn_scores: tf.Tensor = (1.0 - attn_mask) * -1e9 + attn_scores
 		
-		attention_scores = tf.add(attention_scores, adder)
+		attn_probs: tf.Tensor = self.softmax_layer(attn_scores)
 		
-		attention_probs = self.softmax_layer(attention_scores)
+		attn_output: tf.Tensor = tf.matmul(attn_probs, value)
+		attn_output: tf.Tensor = tf.transpose(attn_output, [0, 2, 1, 3])
+		attn_output: tf.Tensor = tf.reshape(attn_output, hidden_states.shape)
 		
-		attention_output = tf.matmul(attention_probs, value)
-		attention_output = self.transpose_for_scores(attention_output, batch, length)
-		attention_output = tf.reshape(attention_output, [batch, length, dimension])
-		hidden_states = self.output_dense(attention_output)
-		hidden_states += hidden_states
-		inputs.input_ids = self.norm_layer(hidden_states)
-		return inputs
+		output: tf.Tensor = self.output_dense(attn_output)
+		return output
 
 
 class MaskedLmOutput(keras.layers.Layer):
-	def __init__(self, config):
-		super().__init__()
-		with tf.name_scope("lm-output"):
-			self.config = config
-			self.dense_layer = keras.layers.Dense(
-				units=config.hidden_dim,
-				kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
-				bias_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
-				activation=keras.activations.gelu,
-				name='lm_output'
-			)
-			self.norm_layer = tf.keras.layers.LayerNormalization(axis=-1)
+	def __init__(self, config) -> None:
+		super().__init__(name='MaskedLMOutput')
+		self.thresholds = config.thresholds
+		self.dense_layer = keras.layers.Dense(
+			units=config.hidden_dim,
+			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=config.initializer_range),
+			bias_initializer=tf.keras.initializers.zeros,
+			activation=config.activation,
+			name='lm_output'
+		)
+		self.norm_layer = tf.keras.layers.LayerNormalization(axis=-1)
 			
 	@staticmethod
-	def gather_position(seq, position):
-		shape = seq.shape
-		batch = shape[0]
-		length = seq.shape[1]
-		dimension = seq.shape[2]
+	def _gather_position(seq: tf.Tensor, position: tf.Tensor) -> tf.Tensor:
+		batch, length, dimension = seq.shape
 		position_shift = tf.expand_dims(length * tf.range(batch), -1)
 		flat_positions = tf.reshape(position + position_shift, [-1])
-		flat_sequence = tf.reshape(seq, [batch * length, dimension])
+		flat_sequence = tf.reshape(seq, [-1, dimension])
 		gathered = tf.gather(flat_sequence, flat_positions)
 		return tf.reshape(gathered, [batch, -1, dimension])
 	
-	def call(self, input_tuple):
-		from Model.dataclassutils import MLMOutput
+	def call(self, input_tuple: tuple[MaskedInputs, tf.Tensor]) -> Output:
 		inputs, embedding_table = input_tuple
-		with tf.name_scope("lm-output"):
-			relevant_hidden = self.gather_position(
-				seq=inputs.input_ids,
-				position=inputs.masked_lm_positions
-			)
-			hidden = self.dense_layer(relevant_hidden)
-			
-			hidden = self.norm_layer(hidden)
-			
-			#   shape = [batch, num_masked, vocab_size]
-			labels = tf.one_hot(inputs.masked_lm_ids, depth=self.config.vocab_size, dtype=tf.float32)
-			
-			#   get_embedding_table.shape = [vocab_size, hidden_size]
-			#   logits.shape = [batch, num_masked, vocab_size]
-			logits = tf.matmul(hidden, embedding_table, transpose_b=True)
-			logits = self.norm_layer(logits)
-			
-			per_loss = tf.nn.weighted_cross_entropy_with_logits(
-				labels=labels,
-				logits=logits,
-				pos_weight=1  # 正样本权重
-			)
-			per_loss = per_loss * inputs.masked_lm_weights
-			loss = tf.reduce_mean(per_loss)
-			probs = tf.nn.sigmoid(logits)
-			probs = tf.multiply(probs, inputs.masked_lm_weights)
-			preds = tf.cast(probs > 0.5, tf.int32)
-			return MLMOutput(logits=logits, probs=probs, per_example_loss=per_loss, loss=loss, preds=preds)
+		relevant_hidden: tf.Tensor = self._gather_position(
+			seq=inputs.input_ids,
+			position=inputs.masked_lm_positions
+		)
+		hidden: tf.Tensor = self.dense_layer(relevant_hidden)
+		hidden: tf.Tensor = self.norm_layer(hidden)
+		#   get_embedding_table.shape = [vocab_size, hidden_size]
+		#   logits.shape = [batch, num_masked, vocab_size]
+		logits: tf.Tensor = tf.matmul(hidden, embedding_table, transpose_b=True)
+		#   shape = [batch, num_masked, vocab_size]
+		labels: tf.Tensor = tf.one_hot(inputs.masked_lm_ids, depth=logits.shape[-1], dtype=tf.float32)
+		loss: tf.Tensor = tf.nn.weighted_cross_entropy_with_logits(
+			labels=labels,
+			logits=logits,
+			pos_weight=10  # 正样本权重
+		)
+		loss: tf.Tensor = tf.reduce_mean(loss)
+		probs: tf.Tensor = tf.nn.sigmoid(logits)
+		preds: tf.Tensor = tf.cast(probs > self.thresholds, tf.int32)
+		return Output(logits=logits, probs=probs, loss=loss, preds=preds)
 
 
 class GetLoss(keras.layers.Layer):
-	def __init__(self, config):
+	def __init__(self, config) -> None:
 		super(GetLoss, self).__init__(name='GetLoss')
 		self.config = config
 		self.hidden_layer = keras.layers.Dense(
@@ -284,42 +276,127 @@ class GetLoss(keras.layers.Layer):
 			name='dis_output',
 			activation=keras.activations.gelu
 		)
-		self.bias = self.add_weight(name='bias', shape=(self.config.vocab_size,), initializer='zeros', trainable=True)
+		self.bias = self.add_weight(name='bias', shape=(config.vocab_size,), initializer='zeros', trainable=True)
 		self.logits_dense = keras.layers.Dense(
 			1,
 			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
 			use_bias=False, name='logits_dense',
 		)
-		self.norm_layer = keras.layers.LayerNormalization(axis=-1, name='norm_output')
+		self.norm_logits = keras.layers.LayerNormalization(axis=-1, name='norm_logits')
 		
-	def call(self, inputs_tuple):
-		from start_and_output.output_compute import compute_metrics
-		inputs, embeding_weight = inputs_tuple
-		input_ids = inputs.input_ids
-		input_mask_2d = inputs.input_mask
-		labels = tf.cast(inputs.labels, tf.float32)
-		hidden = self.hidden_layer(input_ids)
-		hidden = self.norm_layer(hidden)
-		hidden = tf.matul(hidden, embeding_weight)
-		hidden = tf.nn.bias_add(hidden, self.bias)
-		logits = tf.squeeze(self.logits_dense(hidden), axis=-1)
-		logits = self.norm_layer(logits)
-		input_mask_2d = tf.cast(input_mask_2d, tf.float32)
-		logits = tf.multiply(logits, input_mask_2d)
+	def call(self, inputs_tuple: tuple[MaskedInputs, tf.Tensor]) -> Output:
+		"""结果输入"""
+		inputs: MaskedInputs
+		embed_weight: tf.Tensor
+		# embedding_wieght:[vocab_size, hidden_dim]
+		inputs, embed_weight = inputs_tuple
+
+		# input_ids:[batch, seq, hidden_dim]
+		hidden: tf.Tensor = inputs.input_ids
+		labels: tf.Tensor = tf.cast(inputs.labels, tf.float32)
+		input_mask_2d: tf.Tensor = tf.cast(inputs.input_mask, tf.float32)
 		
-		test = False
-		if test:
-			loss = tf.losses.binary_focal_crossentropy(y_true=labels, y_pred=logits, from_logits=True, alpha=0.8, gamma=5.0)
-		else:
-			loss = tf.nn.weighted_cross_entropy_with_logits(
-				labels=labels,
+		"""分类层处理"""
+		hidden: tf.Tensor = self.hidden_layer(hidden)
+		# hidden:[batch, seq, vocab_size]
+		hidden: tf.Tensor = tf.matmul(hidden, embed_weight, transpose_b=True)
+		hidden: tf.Tensor = tf.nn.bias_add(hidden, self.bias)
+		# hidden:[batch, seq]
+		hidden: tf.Tensor = tf.squeeze(self.logits_dense(hidden), axis=-1)
+		
+		labels = self._label_operation(self.config.label_operation, labels, self.config.hidden_operation)
+		if self.config.hidden_operation:
+			hidden, input_mask_2d = self._hidden_operation(
+				hidden_operation=self.config.hidden_operation,
+				hidden=hidden,
+				input_mask_2d=input_mask_2d)
+		logits = self.norm_logits(hidden)
+		
+		if self.config.mask_operation:
+			logits, labels, input_mask_2d = self._maskoutput_operation(
+				config=self.config,
 				logits=logits,
-				pos_weight=1  # 正样本权重
+				labels=labels,
+				input_mask_2d=input_mask_2d
 			)
-			loss = tf.reduce_mean(loss)
-		probs = tf.nn.sigmoid(logits)
+		logits = self.norm_logits(hidden)
+		loss = tf.nn.weighted_cross_entropy_with_logits(
+			labels=labels,
+			logits=logits,
+			pos_weight=1  # 正样本权重
+		)
+		loss = tf.reduce_mean(loss)
+		probs = tf.keras.activations.sigmoid(logits)
 		probs = tf.multiply(probs, input_mask_2d)
-		preds = tf.cast(probs > 0.6, tf.int32)
-		compute_metrics(y_true=labels, y_pred=preds, save_path=self.config.metrics_save_path)
-		
-		return loss
+			
+		"""0.65提升precision"""
+		preds = tf.cast(probs > self.config.thresholds, tf.float32)
+		"""反应模型预测倾向"""
+		return Output(logits=logits, probs=probs, loss=loss, preds=preds)
+	
+	@staticmethod
+	def _hidden_operation(hidden_operation: str, hidden: tf.Tensor, input_mask_2d) -> tuple[tf.Tensor, tf.Tensor]:
+		"""hidden_operation"""
+		if hidden_operation == 'only_focus':
+			# hidden.shape = [batch]
+			logits: tf.Tensor = hidden[:, 13]
+			input_mask_2d: tf.Tensor = tf.ones_like(logits, dtype=tf.float32)
+		elif hidden_operation == 'pooled':
+			# hidden.shape = [batch]
+			hidden: tf.Tensor = tf.reduce_sum(hidden, axis=-1)
+			logits: tf.Tensor = hidden
+			input_mask_2d: tf.Tensor = tf.ones_like(logits, tf.float32)
+		elif hidden_operation == 'CLS':
+			# hidden.shape = [batch]
+			logits: tf.Tensor = hidden[:, 0]
+			input_mask_2d: tf.Tensor = tf.ones_like(logits, dtype=tf.float32)
+		else:
+			hidden: tf.Tensor = hidden
+			input_mask_2d: tf.Tensor = input_mask_2d
+		return hidden, input_mask_2d
+	
+	@staticmethod
+	def _maskoutput_operation(
+			config,
+			logits: tf.Tensor,
+			labels: tf.Tensor,
+			input_mask_2d: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+		positive: tf.Tensor = labels == config.focus_label
+		positive: tf.Tensor = tf.where(positive)
+		negative: tf.Tensor = labels != config.focus_label
+		negative: tf.Tensor = tf.where(negative)
+		if len(positive) < len(negative):
+			selected_position: tf.Tensor = negative
+			length: float = len(positive) * config.ratio
+			output: tf.Tensor = positive
+		else:
+			selected_position: tf.Tensor = positive
+			output: tf.Tensor = negative
+			length: float = len(negative) * config.ratio
+		minority: tf.Tensor = tf.random.shuffle(selected_position)
+		mask: tf.Tensor = tf.zeros_like(labels, dtype=tf.bool)
+		# 使用索引更新掩码
+		all_position: tf.Tensor = tf.concat([output, minority[:length]], axis=0)
+		mask: tf.Tensor = tf.tensor_scatter_nd_update(
+			mask,
+			all_position,  # 需要置为True的坐标（形状为[N, D]）
+			tf.ones([tf.shape(all_position)[0]], dtype=tf.bool),  # 填充True值
+		)
+		positions: tf.Tensor = tf.cast(mask, tf.float32)
+		logits: tf.Tensor = tf.multiply(logits, positions)
+		labels: tf.Tensor = tf.multiply(labels, positions)
+		input_mask_2d: tf.Tensor = tf.multiply(input_mask_2d, positions)
+		return logits, labels, input_mask_2d
+	
+	@staticmethod
+	def _label_operation(label_operation: str, labels: tf.Tensor, hidden_operation: str) -> tf.Tensor:
+		if label_operation == 'sample':
+			# labels.shape = [batch]
+			labels: tf.Tensor = labels[:, 13]
+			if hidden_operation in ['pooled', 'only_focus', 'CLS']:
+				pass
+			else:
+				raise "hidden operation isn't matched label operation"
+		else:
+			pass
+		return labels
