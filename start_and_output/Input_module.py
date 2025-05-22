@@ -1,11 +1,12 @@
 import tensorflow as tf
+from typing import Union
 
 
-@tf.function
-def get_features(config):
+def get_features(config, epoch: Union[bool, int] = False):
 	"""
 	DESCRIPTION:
 		Before the model start, loading the data, which is tensorflow datatype
+	:param epoch:
 	:param config: self define object class
 	:return:
 	"""
@@ -24,6 +25,11 @@ def get_features(config):
 	else:
 		input_file = config.test_file
 	
+	if epoch:
+		epoch = epoch
+	else:
+		epoch = config.train_epochs
+	
 	# create dataset
 	dataset = tf.data.TFRecordDataset(input_file)
 	feature_description = {
@@ -33,6 +39,7 @@ def get_features(config):
 		'labels': tf.io.FixedLenFeature([config.max_seq_length], tf.int64),
 	}
 	data_set = dataset.map(_parse_example)
-	dataset = data_set.shuffle(buffer_size=config.buffer_size).repeat().batch(config.batch_size, drop_remainder=True)
+	dataset = data_set.shuffle(
+		buffer_size=config.buffer_size).repeat(epoch).batch(config.batch_size, drop_remainder=True)
 	print(f"def get_features: {dataset=}")
 	return dataset

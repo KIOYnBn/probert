@@ -15,8 +15,7 @@ def initial() -> None:
 		f.write('')
 		
 		
-@tf.function
-def main(input_files: Union[dict, bool] = None, train: bool = False) -> None:
+def main(input_files: Union[dict, bool] = None, train: bool = True) -> None:
 	config: Config = Config(input_files=input_files, train=train)
 	model: ProbertModel = ProbertModel(config)
 	optimizer: tf.keras.optimizers = create_optimizer(config)

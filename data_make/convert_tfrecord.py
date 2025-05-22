@@ -39,7 +39,6 @@ def loading_data(input_file: str) -> tuple[list, list, list]:
 	seqs: list = []
 	labels: list = []
 	with open(input_file, 'r') as f:
-		count: int = 0
 		lines = iter(f.readlines())
 		for line in lines:
 			if line.startswith('>'):
@@ -56,9 +55,6 @@ def loading_data(input_file: str) -> tuple[list, list, list]:
 					names.append(name)
 					seqs.append(seq)
 					labels.append(label)
-				count += 1
-			if count > 10000000000:
-				break
 	return names, seqs, labels
 
 
@@ -72,7 +68,10 @@ def convert_tokens_to_ids(tokens: list[str], vocab: dict[str, int]) -> list[int]
 	"""
 	ids: list = []
 	for position in range(len(tokens)):
-		ids += [vocab[tokens[position].upper()]]
+		if tokens[position] in vocab.keys():
+			ids += [vocab[tokens[position].upper()]]
+		else:
+			ids += [vocab['-']]
 	return ids
 
 

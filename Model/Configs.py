@@ -17,16 +17,8 @@ class Config:
 		# 2): my test operation
 		"""operation"""
 		self.data_operation: str = 'normal'
-		self.hidden_operation: str = 'normal'
-		"""hidden operation include normal, CLS, only_focus, pooled"""
-		self.mask_operation: bool = False
-		self.label_operation: str = 'sample' if (
-				self.hidden_operation in ['only_focus', 'pooled', 'CLS']
-				and self.mask_operation is False) else 'all'
+		self.label_operation: str = 'sample'
 		print(f'{self.label_operation=}')
-		
-		self.focus_label: int = 1
-		self.ratio: int = 4
 		
 		# 3): Input Module
 		if input_files is None:

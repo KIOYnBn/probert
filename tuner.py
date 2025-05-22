@@ -27,6 +27,7 @@ def tuner_main() -> None:
 		)
 		return model
 	
+	
 	data_train: tf.data.Dataset = get_features(Config(train=True))
 	data_eval: tf.data.Dataset = get_features(Config(train=False))
 	
@@ -42,10 +43,10 @@ def tuner_main() -> None:
 	tuner.search(
 		data_train,
 		validation_data=data_eval,
-		epochs=50,
-		steps_per_epoch=20,
+		epochs=3,
+		steps_per_epoch=10,
 		callbacks=[
-			tf.keras.callbacks.EarlyStopping(patience=5),
+			tf.keras.callbacks.EarlyStopping(patience=5, monitor='val_auc', mode='max'),
 			tf.keras.callbacks.TensorBoard(log_dir='./logs')
 		]
 	)

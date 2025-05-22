@@ -4,18 +4,17 @@ from Model.mask import mask as mask_function
 from Model.dataclassutils import MaskInputs, Output, MaskedInputs
 
 
-@tf.function
 class ProbertModel(tf.keras.Model):
 	def __init__(self, config) -> None:
 		super().__init__(name='ProbertModel')
-		
-		# 1): the base layer to forward
 		self.config = config
-		self.embedding = TFBertEmbedding(self.config)
-		self.encoder = TFBertcoder(self.config, name='Encoder')
-		self.mlm_layer = MaskedLmOutput(config=self.config)
-		self.decoder = TFBertcoder(self.config, name='Decoder')
-		self.sites_loss = GetLoss(self.config)
+		# 1): the base layer to forward
+		self.label_operation: str = config.label_operation
+		self.embedding = TFBertEmbedding(config)
+		self.encoder = TFBertcoder(config, name='Encoder')
+		self.mlm_layer = MaskedLmOutput(config=config)
+		self.decoder = TFBertcoder(config, name='Decoder')
+		self.sites_loss = GetLoss(config)
 		
 		# 2): to used in custom step
 		self.generator_loss: tf.Tensor = tf.constant(0.0)
@@ -27,6 +26,8 @@ class ProbertModel(tf.keras.Model):
 		inputs: dict
 		targets: tf.Tensor
 		inputs, targets = data
+		if self.label_operation == 'sample':
+			targets = targets[:, 13]
 		
 		with tf.GradientTape() as tape:
 			model_output: Output = self(inputs, training=True)
@@ -39,11 +40,12 @@ class ProbertModel(tf.keras.Model):
 		self.compiled_metrics.update_state(targets, model_output.probs)
 		return {m.name: m.result() for m in self.metrics}
 	
-	
 	def test_step(self, data):
 		inputs: dict
 		targets: tf.Tensor
 		inputs, targets = data
+		if self.label_operation == 'sample':
+			targets = targets[:, 13]
 		model_output: Output = self(inputs, training=False)
 		loss: tf.Tensor = self.compiled_loss(targets, model_output.loss, regularization_losses=self.losses)
 		total_loss: tf.Tensor = self.generator_loss * 0.1 + loss
@@ -87,16 +89,15 @@ class ProbertModel(tf.keras.Model):
 class TFBertEmbedding(keras.layers.Layer):
 	def __init__(self, config) -> None:
 		super(TFBertEmbedding, self).__init__(name='TFBertEmbedding')
-		self.config = config
 		self.weight = self.add_weight(
 			name='weight_embeddings',
 			shape=[config.vocab_size, config.hidden_dim],
-			initializer=keras.initializers.TruncatedNormal(stddev=self.config.initializer_range),
+			initializer=keras.initializers.TruncatedNormal(stddev=config.initializer_range),
 		)
 		self.position_embedding = self.add_weight(
-			shape=[self.config.max_position_embeddings, self.config.hidden_dim],
+			shape=[config.max_position_embeddings, config.hidden_dim],
 			name='position_embeddings',
-			initializer=keras.initializers.TruncatedNormal(stddev=self.config.initializer_range)
+			initializer=keras.initializers.TruncatedNormal(stddev=config.initializer_range)
 		)
 		self.layer_norm = keras.layers.LayerNormalization(name='layer_norm')
 	
@@ -268,7 +269,8 @@ class MaskedLmOutput(keras.layers.Layer):
 class GetLoss(keras.layers.Layer):
 	def __init__(self, config) -> None:
 		super(GetLoss, self).__init__(name='GetLoss')
-		self.config = config
+		self.thresholds = config.thresholds
+		self.label_operation = config.label_operation
 		self.hidden_layer = keras.layers.Dense(
 			config.hidden_dim,
 			kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02),
@@ -303,22 +305,11 @@ class GetLoss(keras.layers.Layer):
 		hidden: tf.Tensor = tf.nn.bias_add(hidden, self.bias)
 		# hidden:[batch, seq]
 		hidden: tf.Tensor = tf.squeeze(self.logits_dense(hidden), axis=-1)
+		if self.label_operation == 'sample':
+			hidden: tf.Tensor = tf.reduce_sum(hidden, axis=-1)
+			labels: tf.Tensor = labels[:, 13]
+			input_mask_2d: tf.Tensor = input_mask_2d[:, 13]
 		
-		labels = self._label_operation(self.config.label_operation, labels, self.config.hidden_operation)
-		if self.config.hidden_operation:
-			hidden, input_mask_2d = self._hidden_operation(
-				hidden_operation=self.config.hidden_operation,
-				hidden=hidden,
-				input_mask_2d=input_mask_2d)
-		logits = self.norm_logits(hidden)
-		
-		if self.config.mask_operation:
-			logits, labels, input_mask_2d = self._maskoutput_operation(
-				config=self.config,
-				logits=logits,
-				labels=labels,
-				input_mask_2d=input_mask_2d
-			)
 		logits = self.norm_logits(hidden)
 		loss = tf.nn.weighted_cross_entropy_with_logits(
 			labels=labels,
@@ -330,73 +321,6 @@ class GetLoss(keras.layers.Layer):
 		probs = tf.multiply(probs, input_mask_2d)
 			
 		"""0.65提升precision"""
-		preds = tf.cast(probs > self.config.thresholds, tf.float32)
+		preds = tf.cast(probs > self.thresholds, tf.float32)
 		"""反应模型预测倾向"""
 		return Output(logits=logits, probs=probs, loss=loss, preds=preds)
-	
-	@staticmethod
-	def _hidden_operation(hidden_operation: str, hidden: tf.Tensor, input_mask_2d) -> tuple[tf.Tensor, tf.Tensor]:
-		"""hidden_operation"""
-		if hidden_operation == 'only_focus':
-			# hidden.shape = [batch]
-			logits: tf.Tensor = hidden[:, 13]
-			input_mask_2d: tf.Tensor = tf.ones_like(logits, dtype=tf.float32)
-		elif hidden_operation == 'pooled':
-			# hidden.shape = [batch]
-			hidden: tf.Tensor = tf.reduce_sum(hidden, axis=-1)
-			logits: tf.Tensor = hidden
-			input_mask_2d: tf.Tensor = tf.ones_like(logits, tf.float32)
-		elif hidden_operation == 'CLS':
-			# hidden.shape = [batch]
-			logits: tf.Tensor = hidden[:, 0]
-			input_mask_2d: tf.Tensor = tf.ones_like(logits, dtype=tf.float32)
-		else:
-			hidden: tf.Tensor = hidden
-			input_mask_2d: tf.Tensor = input_mask_2d
-		return hidden, input_mask_2d
-	
-	@staticmethod
-	def _maskoutput_operation(
-			config,
-			logits: tf.Tensor,
-			labels: tf.Tensor,
-			input_mask_2d: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-		positive: tf.Tensor = labels == config.focus_label
-		positive: tf.Tensor = tf.where(positive)
-		negative: tf.Tensor = labels != config.focus_label
-		negative: tf.Tensor = tf.where(negative)
-		if len(positive) < len(negative):
-			selected_position: tf.Tensor = negative
-			length: float = len(positive) * config.ratio
-			output: tf.Tensor = positive
-		else:
-			selected_position: tf.Tensor = positive
-			output: tf.Tensor = negative
-			length: float = len(negative) * config.ratio
-		minority: tf.Tensor = tf.random.shuffle(selected_position)
-		mask: tf.Tensor = tf.zeros_like(labels, dtype=tf.bool)
-		# 使用索引更新掩码
-		all_position: tf.Tensor = tf.concat([output, minority[:length]], axis=0)
-		mask: tf.Tensor = tf.tensor_scatter_nd_update(
-			mask,
-			all_position,  # 需要置为True的坐标（形状为[N, D]）
-			tf.ones([tf.shape(all_position)[0]], dtype=tf.bool),  # 填充True值
-		)
-		positions: tf.Tensor = tf.cast(mask, tf.float32)
-		logits: tf.Tensor = tf.multiply(logits, positions)
-		labels: tf.Tensor = tf.multiply(labels, positions)
-		input_mask_2d: tf.Tensor = tf.multiply(input_mask_2d, positions)
-		return logits, labels, input_mask_2d
-	
-	@staticmethod
-	def _label_operation(label_operation: str, labels: tf.Tensor, hidden_operation: str) -> tf.Tensor:
-		if label_operation == 'sample':
-			# labels.shape = [batch]
-			labels: tf.Tensor = labels[:, 13]
-			if hidden_operation in ['pooled', 'only_focus', 'CLS']:
-				pass
-			else:
-				raise "hidden operation isn't matched label operation"
-		else:
-			pass
-		return labels
