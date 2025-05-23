@@ -32,7 +32,7 @@ def tuner_main() -> None:
 	
 	tuner = kt.Hyperband(
 		model_builder,
-		objective=kt.Objective("val_auc", direction="max"),  # 根据验证集 AUC 优化
+		objective=kt.Objective("val_precision", direction="max"),  # 根据验证集 AUC 优化
 		max_epochs=30,
 		factor=3,
 		directory='tuner_results',
@@ -42,7 +42,7 @@ def tuner_main() -> None:
 	tuner.search(
 		data_train,
 		validation_data=data_eval,
-		epochs=50,
+		epochs=1,
 		steps_per_epoch=20,
 		callbacks=[
 			tf.keras.callbacks.EarlyStopping(patience=5),

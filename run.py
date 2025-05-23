@@ -6,7 +6,6 @@ from start_and_output.Input_module import get_features as get_dataset
 from start_and_output.output_compute import ComputeMetrics, compute_loss
 from Model.optimization import create_optimizer
 tf.config.run_functions_eagerly(True)
-tf.random.set_seed(42)
 print(tf.__version__)
 
 
@@ -15,7 +14,6 @@ def initial() -> None:
 		f.write('')
 		
 		
-@tf.function
 def main(input_files: Union[dict, bool] = None, train: bool = False) -> None:
 	config: Config = Config(input_files=input_files, train=train)
 	model: ProbertModel = ProbertModel(config)
@@ -59,29 +57,10 @@ def main(input_files: Union[dict, bool] = None, train: bool = False) -> None:
 		model.evaluate(data_eval, steps=config.per_eval_steps)
 		print('model is evaluated')
 		
-		
-def reduced_main() -> None:
-	import os
-	reduce_path: str = './data_make/data/target/k/reduce'
-	all_types: list = os.listdir(f'{reduce_path}/train')
-	for reduced_num in range(len(all_types)):
-		reduced_type: str = all_types[reduced_num]
-		print(f'{reduced_type=}')
-		train_file: str = f'{reduce_path}/train/{reduced_type}/train_fragment.tfrecord'
-		test_file: str = f'{reduce_path}/test/{reduced_type}/test_fragment.tfrecord'
-		metrics_save_dir: str = f'results/reduced/{reduced_type}'
-		os.makedirs(metrics_save_dir, exist_ok=True)
-		metrics_save_path: str = f'{metrics_save_dir}/metrics.txt'
-		input_files: dict = {'train_file': train_file, 'test_file': test_file, 'metrics_save_path': metrics_save_path}
-		main(input_files, train=True)
-		with open(metrics_save_path, 'w') as f:
-			pass
-		main(input_files, train=False)
-		
 
 if __name__ == '__main__':
 	"""
 	the python file runing the T5 model to exert all tasks
 	"""
 	main()
-	# reduced_main()
+

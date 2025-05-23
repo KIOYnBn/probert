@@ -25,28 +25,27 @@ class ProbertModel(tf.keras.Model):
 	
 	def train_step(self, data):
 		inputs: dict
-		targets: tf.Tensor
-		inputs, targets = data
+		inputs, _ = data
 		
-		with tf.GradientTape() as tape:
+		with (tf.GradientTape() as tape):
 			model_output: Output = self(inputs, training=True)
-			loss: tf.Tensor = self.compiled_loss(targets, model_output.loss, regularization_losses=self.losses)
+			loss: tf.Tensor = self.compiled_loss(model_output.labels, model_output.loss, regularization_losses=self.losses)
 			total_loss: tf.Tensor = self.generator_loss*0.1 + loss
 		
 		trainable_variables = self.trainable_variables
 		gradients = tape.gradient(total_loss, trainable_variables)
 		self.optimizer.apply_gradients(zip(gradients, trainable_variables))
-		self.compiled_metrics.update_state(targets, model_output.probs)
+		self.compiled_metrics.update_state(model_output.labels, model_output.probs)
 		return {m.name: m.result() for m in self.metrics}
 	
 	def test_step(self, data):
 		inputs: dict
-		targets: tf.Tensor
-		inputs, targets = data
-		model_output: Output = self(inputs, training=False)
-		loss: tf.Tensor = self.compiled_loss(targets, model_output.loss, regularization_losses=self.losses)
+		inputs, _ = data
+		model_output: Output
+		model_output = self(inputs, training=False)
+		loss: tf.Tensor = self.compiled_loss(model_output.labels, model_output.loss, regularization_losses=self.losses)
 		total_loss: tf.Tensor = self.generator_loss * 0.1 + loss
-		self.compiled_metrics.update_state(targets, model_output.probs)
+		self.compiled_metrics.update_state(model_output.labels, model_output.probs)
 		return {m.name: m.result() for m in self.metrics}
 		
 	def call(self, features: dict, training=None, mask=None) -> Output:
@@ -261,7 +260,7 @@ class MaskedLmOutput(keras.layers.Layer):
 		loss: tf.Tensor = tf.reduce_mean(loss)
 		probs: tf.Tensor = tf.nn.sigmoid(logits)
 		preds: tf.Tensor = tf.cast(probs > self.thresholds, tf.int32)
-		return Output(logits=logits, probs=probs, loss=loss, preds=preds)
+		return Output(logits=logits, probs=probs, loss=loss, preds=preds, labels=labels)
 
 
 class GetLoss(keras.layers.Layer):
@@ -302,24 +301,25 @@ class GetLoss(keras.layers.Layer):
 		hidden: tf.Tensor = tf.nn.bias_add(hidden, self.bias)
 		# hidden:[batch, seq]
 		hidden: tf.Tensor = tf.squeeze(self.logits_dense(hidden), axis=-1)
-		
-		logits = self.norm_logits(hidden)
-		loss = tf.nn.weighted_cross_entropy_with_logits(
-			labels=labels,
-			logits=logits,
-			pos_weight=1  # 正样本权重
-		)
+		logits: tf.Tensor = self.norm_logits(hidden)
+		logits: tf.Tensor = tf.boolean_mask(logits, input_mask_2d)
+		labels: tf.Tensor = tf.boolean_mask(labels, input_mask_2d)
+		if self.config.train:
+			if self.config.mask_operation:
+				logits, labels = self._maskoutput(labels=labels, logits=logits, config=self.config)
+		loss = tf.keras.losses.binary_crossentropy(y_true=labels, y_pred=logits, from_logits=True)
+		"""
 		if self.config.mask_operation:
 			mid_loss = self._maskoutput_operation(config=self.config, loss=loss, labels=labels, pad=input_mask_2d)
 			loss += mid_loss
+		"""
 		loss = tf.reduce_mean(loss)
 		probs = tf.keras.activations.sigmoid(logits)
-		probs = tf.multiply(probs, input_mask_2d)
 			
 		"""0.65提升precision"""
 		preds = tf.cast(probs > self.config.thresholds, tf.float32)
 		"""反应模型预测倾向"""
-		return Output(logits=logits, probs=probs, loss=loss, preds=preds)
+		return Output(logits=logits, probs=probs, loss=loss, preds=preds, labels=labels)
 	
 	@staticmethod
 	def _maskoutput_operation(
@@ -332,8 +332,8 @@ class GetLoss(keras.layers.Layer):
 		def _candiate(target: tf.Tensor, the_pad: tf.Tensor, focus) -> tf.Tensor:
 			bool_target = tf.cast(target == focus, tf.int32)
 			bool_pad = tf.cast(pad == 1, tf.int32)
-			output = tf.cast(tf.multiply(bool_target, bool_pad), tf.bool)
-			return output
+			candiator = tf.cast(tf.multiply(bool_target, bool_pad), tf.bool)
+			return candiator
 		
 		positive: tf.Tensor = _candiate(target=labels, the_pad=pad, focus=1)
 		positive: tf.Tensor = tf.where(positive)
@@ -359,3 +359,39 @@ class GetLoss(keras.layers.Layer):
 		positions: tf.Tensor = tf.cast(mask, tf.float32)
 		loss: tf.Tensor = tf.multiply(loss, positions)
 		return loss
+	
+	@staticmethod
+	def _maskoutput(
+			config,
+			logits: tf.Tensor,
+			labels: tf.Tensor,) -> tuple[tf.Tensor, tf.Tensor]:
+		positive: tf.Tensor = labels == config.focus_label
+		positive: tf.Tensor = tf.where(positive)
+		negative: tf.Tensor = labels != config.focus_label
+		negative: tf.Tensor = tf.where(negative)
+		if len(positive) < len(negative):
+			selected_position: tf.Tensor = negative
+			length: float = len(positive) * config.ratio
+			output: tf.Tensor = positive
+		else:
+			selected_position: tf.Tensor = positive
+			output: tf.Tensor = negative
+			length: float = len(negative) * config.ratio
+		minority: tf.Tensor = tf.random.shuffle(selected_position)
+		mask: tf.Tensor = tf.zeros_like(labels, dtype=tf.bool)
+		# 使用索引更新掩码
+		all_position: tf.Tensor = tf.concat([output, minority[:length]], axis=0)
+		mask: tf.Tensor = tf.tensor_scatter_nd_update(
+			mask,
+			all_position,  # 需要置为True的坐标（形状为[N, D]）
+			tf.ones([tf.shape(all_position)[0]], dtype=tf.bool),  # 填充True值
+		)
+		positions: tf.Tensor = tf.cast(mask, tf.float32)
+		logits: tf.Tensor = tf.boolean_mask(logits, positions)
+		labels: tf.Tensor = tf.boolean_mask(labels, positions)
+		"""
+		logits: tf.Tensor = tf.multiply(logits, positions)
+		labels: tf.Tensor = tf.multiply(labels, positions)
+		"""
+		return logits, labels
+	

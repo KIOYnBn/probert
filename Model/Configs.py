@@ -19,7 +19,7 @@ class Config:
 		self.data_operation: str = 'sites'
 		self.mask_operation: bool = True
 		self.focus_label: int = 1
-		self.ratio: int = 4
+		self.ratio: int = 1
 		
 		# 3): Input Module
 		if input_files is None:
@@ -38,9 +38,9 @@ class Config:
 		
 		# 4): Run Set
 		self.train: bool = train
-		self.train_epochs: int = 2   # 5
-		self.steps_per_epoch: int = 20
-		self.per_eval_steps: int = 2
+		self.train_epochs: int = 10  # 5
+		self.steps_per_epoch: int = 30
+		self.per_eval_steps: int = 10
 		
 		# 5): Mask
 		self.mask_prob: float = 0.15
@@ -60,7 +60,7 @@ class Config:
 			
 		else:
 			self.metrics_save_path: str = input_files.get('metrics_save_path')
-		self.return_metrics: str = 'auc'
+		self.return_metrics: str = 'precision'
 		self.thresholds: float = 0.5
 		self.save_weights_path: str = './Models_hub/save_model.h5'
 		
@@ -73,10 +73,10 @@ class Config:
 			self.size_per_head: int = self.hidden_dim // self.n_heads
 			self.intermediate_dim: int = 2048
 			self.initializer_range: float = 0.02
-			self.activation: str = 'swish'
+			self.activation: str = 'gelu'
 			
 			# 2): Optimizer
-			self.initial_learning_rate: float = 1e-3
+			self.initial_learning_rate: float = 1e-4
 			self.learning_rate_decay_steps: int = 5
 			self.learning_rate_decay_factor: float = 0.85
 			self.staircase: bool = False
@@ -90,7 +90,7 @@ class Config:
 			)
 			self.num_layers: int = self._hp.Int(
 				name='num_layers',
-				min_value=3, max_value=10, step=1
+				min_value=3, max_value=8, step=1
 			)
 			possible_n_heads: list = [
 				2 * selected_n for selected_n in range(2, 32, 2)
@@ -112,6 +112,7 @@ class Config:
 				name='initializer_range',
 				min_value=0.0,
 				max_value=0.10,
+				step=0.01
 			)
 			self.activation: str = self._hp.Choice('gate_activation', ['gelu', 'relu', 'tanh', 'swish'], default='gelu')
 			
@@ -119,19 +120,21 @@ class Config:
 			self.initial_learning_rate: float = self._hp.Float(
 				name='initial_learning_rate',
 				min_value=1e-7,
-				max_value=1e-3,
-				step=1e-1
+				max_value=1e-4,
+				step=10,
+				sampling="log"
 			)
 			self.learning_rate_decay_steps: int = self._hp.Int(
 				name='learning_rate_decay_steps',
-				min_value=1,
-				max_value=10,
-				step=1
+				min_value=5,
+				max_value=20,
+				step=5
 			)
 			self.learning_rate_decay_factor: float = self._hp.Float(
 				name='learning_rate_decay_factor',
 				min_value=0.70,
 				max_value=0.95,
+				step=0.05
 			)
 			self.staircase: bool = self._hp.Choice(
 				name='staircase',

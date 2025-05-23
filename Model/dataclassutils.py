@@ -27,4 +27,5 @@ class Output:
 	probs: tf.Tensor
 	loss: tf.Tensor
 	preds: tf.Tensor
+	labels: tf.Tensor
 	
