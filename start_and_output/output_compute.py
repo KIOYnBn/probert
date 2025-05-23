@@ -34,7 +34,7 @@ class ComputeMetrics(tf.keras.metrics.Metric):
 	def write_metrics(self) -> None:
 		results_sort: list = ['auc', 'precision', 'recall', 'accuracy']
 		written_line: str = '\t'.join(map(str, [self.results[result_type].numpy() for result_type in results_sort]))
-		# print(f"\n{written_line=}")
+		print(f"\n{written_line=}")
 		with open(self.save_path, 'a') as f:
 			f.write(written_line)
 	

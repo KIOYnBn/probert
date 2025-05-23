@@ -39,7 +39,6 @@ class ProbertModel(tf.keras.Model):
 		self.compiled_metrics.update_state(targets, model_output.probs)
 		return {m.name: m.result() for m in self.metrics}
 	
-	
 	def test_step(self, data):
 		inputs: dict
 		targets: tf.Tensor
@@ -257,7 +256,7 @@ class MaskedLmOutput(keras.layers.Layer):
 		loss: tf.Tensor = tf.nn.weighted_cross_entropy_with_logits(
 			labels=labels,
 			logits=logits,
-			pos_weight=10  # 正样本权重
+			pos_weight=1  # 正样本权重
 		)
 		loss: tf.Tensor = tf.reduce_mean(loss)
 		probs: tf.Tensor = tf.nn.sigmoid(logits)
@@ -304,27 +303,15 @@ class GetLoss(keras.layers.Layer):
 		# hidden:[batch, seq]
 		hidden: tf.Tensor = tf.squeeze(self.logits_dense(hidden), axis=-1)
 		
-		labels = self._label_operation(self.config.label_operation, labels, self.config.hidden_operation)
-		if self.config.hidden_operation:
-			hidden, input_mask_2d = self._hidden_operation(
-				hidden_operation=self.config.hidden_operation,
-				hidden=hidden,
-				input_mask_2d=input_mask_2d)
-		logits = self.norm_logits(hidden)
-		
-		if self.config.mask_operation:
-			logits, labels, input_mask_2d = self._maskoutput_operation(
-				config=self.config,
-				logits=logits,
-				labels=labels,
-				input_mask_2d=input_mask_2d
-			)
 		logits = self.norm_logits(hidden)
 		loss = tf.nn.weighted_cross_entropy_with_logits(
 			labels=labels,
 			logits=logits,
 			pos_weight=1  # 正样本权重
 		)
+		if self.config.mask_operation:
+			mid_loss = self._maskoutput_operation(config=self.config, loss=loss, labels=labels, pad=input_mask_2d)
+			loss += mid_loss
 		loss = tf.reduce_mean(loss)
 		probs = tf.keras.activations.sigmoid(logits)
 		probs = tf.multiply(probs, input_mask_2d)
@@ -335,35 +322,22 @@ class GetLoss(keras.layers.Layer):
 		return Output(logits=logits, probs=probs, loss=loss, preds=preds)
 	
 	@staticmethod
-	def _hidden_operation(hidden_operation: str, hidden: tf.Tensor, input_mask_2d) -> tuple[tf.Tensor, tf.Tensor]:
-		"""hidden_operation"""
-		if hidden_operation == 'only_focus':
-			# hidden.shape = [batch]
-			logits: tf.Tensor = hidden[:, 13]
-			input_mask_2d: tf.Tensor = tf.ones_like(logits, dtype=tf.float32)
-		elif hidden_operation == 'pooled':
-			# hidden.shape = [batch]
-			hidden: tf.Tensor = tf.reduce_sum(hidden, axis=-1)
-			logits: tf.Tensor = hidden
-			input_mask_2d: tf.Tensor = tf.ones_like(logits, tf.float32)
-		elif hidden_operation == 'CLS':
-			# hidden.shape = [batch]
-			logits: tf.Tensor = hidden[:, 0]
-			input_mask_2d: tf.Tensor = tf.ones_like(logits, dtype=tf.float32)
-		else:
-			hidden: tf.Tensor = hidden
-			input_mask_2d: tf.Tensor = input_mask_2d
-		return hidden, input_mask_2d
-	
-	@staticmethod
 	def _maskoutput_operation(
 			config,
-			logits: tf.Tensor,
+			loss: tf.Tensor,
 			labels: tf.Tensor,
-			input_mask_2d: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-		positive: tf.Tensor = labels == config.focus_label
+			pad: tf.Tensor,
+	) -> tf.Tensor:
+		
+		def _candiate(target: tf.Tensor, the_pad: tf.Tensor, focus) -> tf.Tensor:
+			bool_target = tf.cast(target == focus, tf.int32)
+			bool_pad = tf.cast(pad == 1, tf.int32)
+			output = tf.cast(tf.multiply(bool_target, bool_pad), tf.bool)
+			return output
+		
+		positive: tf.Tensor = _candiate(target=labels, the_pad=pad, focus=1)
 		positive: tf.Tensor = tf.where(positive)
-		negative: tf.Tensor = labels != config.focus_label
+		negative: tf.Tensor = _candiate(target=labels, the_pad=pad, focus=0)
 		negative: tf.Tensor = tf.where(negative)
 		if len(positive) < len(negative):
 			selected_position: tf.Tensor = negative
@@ -383,20 +357,5 @@ class GetLoss(keras.layers.Layer):
 			tf.ones([tf.shape(all_position)[0]], dtype=tf.bool),  # 填充True值
 		)
 		positions: tf.Tensor = tf.cast(mask, tf.float32)
-		logits: tf.Tensor = tf.multiply(logits, positions)
-		labels: tf.Tensor = tf.multiply(labels, positions)
-		input_mask_2d: tf.Tensor = tf.multiply(input_mask_2d, positions)
-		return logits, labels, input_mask_2d
-	
-	@staticmethod
-	def _label_operation(label_operation: str, labels: tf.Tensor, hidden_operation: str) -> tf.Tensor:
-		if label_operation == 'sample':
-			# labels.shape = [batch]
-			labels: tf.Tensor = labels[:, 13]
-			if hidden_operation in ['pooled', 'only_focus', 'CLS']:
-				pass
-			else:
-				raise "hidden operation isn't matched label operation"
-		else:
-			pass
-		return labels
+		loss: tf.Tensor = tf.multiply(loss, positions)
+		return loss

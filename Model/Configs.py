@@ -16,37 +16,30 @@ class Config:
 		
 		# 2): my test operation
 		"""operation"""
-		self.data_operation: str = 'normal'
-		self.hidden_operation: str = 'normal'
-		"""hidden operation include normal, CLS, only_focus, pooled"""
-		self.mask_operation: bool = False
-		self.label_operation: str = 'sample' if (
-				self.hidden_operation in ['only_focus', 'pooled', 'CLS']
-				and self.mask_operation is False) else 'all'
-		print(f'{self.label_operation=}')
-		
+		self.data_operation: str = 'sites'
+		self.mask_operation: bool = True
 		self.focus_label: int = 1
 		self.ratio: int = 4
 		
 		# 3): Input Module
 		if input_files is None:
 			file_dir = './data_make/data/target'
-			self.target_name: str = 'fe2'
-			self.train_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/train/train_fragment.tfrecord'
-			self.test_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/test/test_fragment.tfrecord'
+			self.target_name: str = 'ca'
+			self.train_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/train.tfrecord'
+			self.test_file: str = f'{file_dir}/{self.target_name}/{self.data_operation}/test.tfrecord'
 		else:
 			self.train_file: str = input_files.get('train_file')
 			self.test_file: str = input_files.get('test_file')
 		print(f"{self.train_file=}, {self.test_file=}")
-		self.batch_size: int = 20 if self.data_operation == 'normal' else 4
+		self.batch_size: int = 4
 		self.buffer_size: int = 1000000
-		self.max_seq_length: int = 27 if self.data_operation == 'normal' else 800
+		self.max_seq_length: int = 800
 		self.input_label_size: int = self.max_seq_length
 		
 		# 4): Run Set
 		self.train: bool = train
-		self.train_epochs: int = 1   # 5
-		self.steps_per_epoch: int = 2
+		self.train_epochs: int = 2   # 5
+		self.steps_per_epoch: int = 20
 		self.per_eval_steps: int = 2
 		
 		# 5): Mask

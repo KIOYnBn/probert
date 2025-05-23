@@ -43,11 +43,8 @@ def loading_data(input_file: str) -> tuple[list, list, list]:
 		lines = iter(f.readlines())
 		for line in lines:
 			if line.startswith('>'):
-				name: str = line[1:].strip()
-				
-				seq: str = next(lines).strip()
-				
-				label: str = next(lines).strip()
+				name, seq, label = line.strip().split('\t')
+				name: str = name[1:]
 				label: list = list(map(int, label))
 				
 				if len(seq) > 798:
@@ -57,7 +54,7 @@ def loading_data(input_file: str) -> tuple[list, list, list]:
 					seqs.append(seq)
 					labels.append(label)
 				count += 1
-			if count > 10000000000:
+			if count > 10000000:
 				break
 	return names, seqs, labels
 
@@ -155,9 +152,9 @@ def tokenize(
 def main() -> None:
 	"""convert txt or fasta to tfrecord"""
 	target_name: str = 'ca'
-	train: str = 'train'
-	path_dir: str = f'./data/target/{target_name}/length'
-	input_path: str = f'{path_dir}/{train}.txt'
+	train: str = 'test'
+	path_dir: str = f'./data/target/{target_name}/sites'
+	input_path: str = f'{path_dir}/{train}.csv'
 	save_dir: str = path_dir
 	tokenize(file_path=input_path, output_path=save_dir, vocab_file='./vocab.txt', train=train)
 
