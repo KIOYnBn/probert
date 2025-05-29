@@ -182,7 +182,8 @@ def features_to_inputs(features: dict) -> MaskedInputs:
 		masked_lm_positions=(features["masked_lm_positions"]),
 		masked_lm_ids=(features["masked_lm_ids"]),
 		masked_lm_weights=(features["masked_lm_weights"]),
-		labels=(features["labels"])
+		labels=(features["labels"]),
+		hidden_states=None
 	)
 
 

@@ -17,7 +17,7 @@ class Config:
 		# 2): my test operation
 		"""operation"""
 		self.data_operation: str = 'sites'
-		self.mask_operation: bool = True
+		self.mask_operation: str = "mask sample"
 		self.focus_label: int = 1
 		self.ratio: int = 1
 		
@@ -35,11 +35,12 @@ class Config:
 		self.buffer_size: int = 1000000
 		self.max_seq_length: int = 800
 		self.input_label_size: int = self.max_seq_length
+		self.focus: list[str] = ["C", "D", "E", "H"]
 		
 		# 4): Run Set
 		self.train: bool = train
-		self.train_epochs: int = 10  # 5
-		self.steps_per_epoch: int = 30
+		self.train_epochs: int = 5  # 5
+		self.steps_per_epoch: int = 20
 		self.per_eval_steps: int = 10
 		
 		# 5): Mask
@@ -67,19 +68,19 @@ class Config:
 	def _init_tunable_params(self):
 		if self._hp is None:
 			# 1): ProBert
-			self.hidden_dim: int = 1024
-			self.num_layers: int = 6
+			self.hidden_dim: int = 1280
+			self.num_layers: int = 3
 			self.n_heads: int = 8
 			self.size_per_head: int = self.hidden_dim // self.n_heads
-			self.intermediate_dim: int = 2048
-			self.initializer_range: float = 0.02
-			self.activation: str = 'gelu'
+			self.intermediate_dim: int = 1 * self.hidden_dim
+			self.initializer_range: float = 0.05
+			self.activation: str = 'relu'
 			
 			# 2): Optimizer
 			self.initial_learning_rate: float = 1e-4
 			self.learning_rate_decay_steps: int = 5
 			self.learning_rate_decay_factor: float = 0.85
-			self.staircase: bool = False
+			self.staircase: bool = True
 		else:
 			# 1): ProBert
 			self.hidden_dim: int = self._hp.Int(
@@ -111,19 +112,18 @@ class Config:
 			self.initializer_range: float = self._hp.Float(
 				name='initializer_range',
 				min_value=0.0,
-				max_value=0.10,
+				max_value=0.05,
 				step=0.01
 			)
 			self.activation: str = self._hp.Choice('gate_activation', ['gelu', 'relu', 'tanh', 'swish'], default='gelu')
 			
 			# 2): opitimizer
-			self.initial_learning_rate: float = self._hp.Float(
+			self.initial_learning_rate: float = self._hp.Choice(
 				name='initial_learning_rate',
-				min_value=1e-7,
-				max_value=1e-4,
-				step=10,
-				sampling="log"
+				values=[1e-4, 1e-5, 1e-6],
+				default=1e-4
 			)
+			print(f'{self.initial_learning_rate=}')
 			self.learning_rate_decay_steps: int = self._hp.Int(
 				name='learning_rate_decay_steps',
 				min_value=5,

@@ -14,6 +14,7 @@ class MaskInputs:
 class MaskedInputs:
 	protein_name: tf.string
 	input_ids: tf.Tensor
+	hidden_states: tf.Tensor or None
 	input_mask: tf.Tensor
 	labels: tf.Tensor
 	masked_lm_positions: tf.Tensor or None

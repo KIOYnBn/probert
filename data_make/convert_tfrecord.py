@@ -1,6 +1,7 @@
 from typing import Union
 import tensorflow as tf
 from Model.Configs import Config
+import os
 
 
 class FullTokenizer(object):
@@ -11,10 +12,13 @@ class FullTokenizer(object):
 		get_vocab: the letter alphabet
 	"""
 	
-	def __init__(self, vocab_file: str) -> None:
+	def __init__(self, vocab_file: Union[str, bool] = None) -> None:
+		if vocab_file is None:
+			module_dir: str = os.path.dirname(os.path.abspath(__file__))
+			vocab_file: str = os.path.join(module_dir, 'vocab.txt')
 		self.vocab: dict[str, int] = dict()
-		with open(vocab_file, 'r') as vocab_file:
-			vocab_lines: list[str] = vocab_file.readlines()
+		with open(vocab_file, 'r') as file:
+			vocab_lines: list[str] = file.readlines()
 			index: int = 0
 			for vocab_line in vocab_lines:
 				token: str = vocab_line.strip()
@@ -151,12 +155,21 @@ def tokenize(
 
 def main() -> None:
 	"""convert txt or fasta to tfrecord"""
-	target_name: str = 'ca'
+	target_name: str = 'na'
 	train: str = 'test'
-	path_dir: str = f'./data/target/{target_name}/sites'
-	input_path: str = f'{path_dir}/{train}.csv'
-	save_dir: str = path_dir
-	tokenize(file_path=input_path, output_path=save_dir, vocab_file='./vocab.txt', train=train)
+	operation: str = "reduce"
+	if operation == "noraml":
+		path_dir: str = f'./data/target/{target_name}/sites'
+		input_path: str = f'{path_dir}/{train}.csv'
+		save_dir: str = path_dir
+		tokenize(file_path=input_path, output_path=save_dir, vocab_file='./vocab.txt', train=train)
+	else:
+		reduce_dir: str = f'data/target/{target_name}/reduce'
+		all_types: list[str] = os.listdir(reduce_dir)
+		for reduce_types in all_types:
+			input_path: str = f'{reduce_dir}/{reduce_types}/{train}.csv'
+			save_dir: str = f"{reduce_dir}/{reduce_types}"
+			tokenize(file_path=input_path, output_path=save_dir, vocab_file='./vocab.txt', train=train)
 
 
 if __name__ == '__main__':

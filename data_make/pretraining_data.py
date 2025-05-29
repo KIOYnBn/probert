@@ -1,3 +1,4 @@
+import os
 
 def filtration(input_file: str, output_file: str) -> None:
 	protein_context = []
@@ -41,9 +42,9 @@ def slice_train_test(input_file: str,  input_dir: str) -> None:
 
 
 def main() -> None:
-	operation: str = 'filtration'
+	operation: str = 'reduce'
 	file_path: str = './data/target'
-	target: str = 'ca'
+	target: str = 'na'
 	residue_path: str = f'{file_path}/{target}'
 	if operation == 'filtration':
 		filtration_path = f'{residue_path}/sites'
@@ -51,9 +52,19 @@ def main() -> None:
 		output_file: str = f'{filtration_path}/all.csv'
 		filtration(input_file, output_file)
 		slice_train_test(output_file, filtration_path)
-		
-		
-
+	if operation == 'reduce':
+		reduce_path = f'{file_path}/{target}/reduce'
+		all_type: list = os.listdir(reduce_path)
+		for reduce_type in all_type:
+			file_path: str = f'{reduce_path}/{reduce_type}'
+			name: str = reduce_type.split('.')[0]
+			name_path: str = f'{reduce_path}/{name}'
+			os.makedirs(name_path, exist_ok=True)
+			input_file: str = file_path
+			output_file: str = f"{name_path}/all.csv"
+			filtration(input_file, output_file)
+			slice_train_test(output_file, name_path)
+			
 
 if __name__ == '__main__':
 	main()

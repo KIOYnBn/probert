@@ -26,15 +26,13 @@ def tuner_main() -> None:
 				thresholds=config.thresholds),
 		)
 		return model
-	
+	# kt.BayesianOptimization
 	data_train: tf.data.Dataset = get_features(Config(train=True))
 	data_eval: tf.data.Dataset = get_features(Config(train=False))
-	
-	tuner = kt.Hyperband(
-		model_builder,
+	tuner = kt.BayesianOptimization(
+		hypermodel=model_builder,
 		objective=kt.Objective("val_precision", direction="max"),  # 根据验证集 AUC 优化
-		max_epochs=30,
-		factor=3,
+		max_trials=100,
 		directory='tuner_results',
 		project_name='fe2_optimization',
 		overwrite=True
@@ -44,6 +42,7 @@ def tuner_main() -> None:
 		validation_data=data_eval,
 		epochs=1,
 		steps_per_epoch=20,
+		validation_steps=10,
 		callbacks=[
 			tf.keras.callbacks.EarlyStopping(patience=5),
 			tf.keras.callbacks.TensorBoard(log_dir='./logs')

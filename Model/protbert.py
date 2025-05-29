@@ -2,6 +2,7 @@ import tensorflow as tf
 import tensorflow.keras as keras
 from Model.mask import mask as mask_function
 from Model.dataclassutils import MaskInputs, Output, MaskedInputs
+from data_make.convert_tfrecord import FullTokenizer
 
 
 @tf.function
@@ -67,7 +68,7 @@ class ProbertModel(tf.keras.Model):
 		
 		# 3): generator
 		encoder_output: tf.Tensor = self.encoder((hidden, masked_inputs.input_mask))
-		masked_inputs.input_ids = encoder_output
+		masked_inputs.hidden_states = encoder_output
 		
 		# 4): Masked Output Loss Compute
 		mlm_output: Output = self.mlm_layer((masked_inputs, embed_weight))
@@ -75,7 +76,7 @@ class ProbertModel(tf.keras.Model):
 		
 		# 5): discriminator
 		decoder_output: tf.Tensor = self.decoder((encoder_output, masked_inputs.input_mask))
-		masked_inputs.input_ids = decoder_output
+		masked_inputs.hidden_states = decoder_output
 		
 		# 6): Site Output Loss Compute
 		sites_output: Output = self.sites_loss((masked_inputs, embed_weight))
@@ -242,7 +243,7 @@ class MaskedLmOutput(keras.layers.Layer):
 	def call(self, input_tuple: tuple[MaskedInputs, tf.Tensor]) -> Output:
 		inputs, embedding_table = input_tuple
 		relevant_hidden: tf.Tensor = self._gather_position(
-			seq=inputs.input_ids,
+			seq=inputs.hidden_states,
 			position=inputs.masked_lm_positions
 		)
 		hidden: tf.Tensor = self.dense_layer(relevant_hidden)
@@ -290,7 +291,8 @@ class GetLoss(keras.layers.Layer):
 		inputs, embed_weight = inputs_tuple
 
 		# input_ids:[batch, seq, hidden_dim]
-		hidden: tf.Tensor = inputs.input_ids
+		input_ids: tf.Tensor = inputs.input_ids
+		hidden: tf.Tensor = inputs.hidden_states
 		labels: tf.Tensor = tf.cast(inputs.labels, tf.float32)
 		input_mask_2d: tf.Tensor = tf.cast(inputs.input_mask, tf.float32)
 		
@@ -305,78 +307,43 @@ class GetLoss(keras.layers.Layer):
 		logits: tf.Tensor = tf.boolean_mask(logits, input_mask_2d)
 		labels: tf.Tensor = tf.boolean_mask(labels, input_mask_2d)
 		if self.config.train:
-			if self.config.mask_operation:
-				logits, labels = self._maskoutput(labels=labels, logits=logits, config=self.config)
+			if self.config.mask_operation == "mask sample":
+				logits, labels = self._mask_sample(labels=labels, logits=logits, config=self.config)
+			elif self.config.mask_operation == "mask focus":
+				candidate: tf.Tensor = self._mask_focus(input_ids=input_ids, focus=self.config.focus)
+				candidate: tf.Tensor = tf.boolean_mask(candidate, input_mask_2d)
+				logits: tf.Tensor = tf.boolean_mask(logits, candidate)
+				labels: tf.Tensor = tf.boolean_mask(labels, candidate)
 		loss = tf.keras.losses.binary_crossentropy(y_true=labels, y_pred=logits, from_logits=True)
-		"""
-		if self.config.mask_operation:
-			mid_loss = self._maskoutput_operation(config=self.config, loss=loss, labels=labels, pad=input_mask_2d)
-			loss += mid_loss
-		"""
 		loss = tf.reduce_mean(loss)
 		probs = tf.keras.activations.sigmoid(logits)
 			
 		"""0.65提升precision"""
 		preds = tf.cast(probs > self.config.thresholds, tf.float32)
+		# print(f"{probs=}\n{labels=}")
 		"""反应模型预测倾向"""
 		return Output(logits=logits, probs=probs, loss=loss, preds=preds, labels=labels)
 	
 	@staticmethod
-	def _maskoutput_operation(
-			config,
-			loss: tf.Tensor,
-			labels: tf.Tensor,
-			pad: tf.Tensor,
-	) -> tf.Tensor:
-		
-		def _candiate(target: tf.Tensor, the_pad: tf.Tensor, focus) -> tf.Tensor:
-			bool_target = tf.cast(target == focus, tf.int32)
-			bool_pad = tf.cast(pad == 1, tf.int32)
-			candiator = tf.cast(tf.multiply(bool_target, bool_pad), tf.bool)
-			return candiator
-		
-		positive: tf.Tensor = _candiate(target=labels, the_pad=pad, focus=1)
-		positive: tf.Tensor = tf.where(positive)
-		negative: tf.Tensor = _candiate(target=labels, the_pad=pad, focus=0)
-		negative: tf.Tensor = tf.where(negative)
-		if len(positive) < len(negative):
-			selected_position: tf.Tensor = negative
-			length: float = len(positive) * config.ratio
-			output: tf.Tensor = positive
-		else:
-			selected_position: tf.Tensor = positive
-			output: tf.Tensor = negative
-			length: float = len(negative) * config.ratio
-		minority: tf.Tensor = tf.random.shuffle(selected_position)
-		mask: tf.Tensor = tf.zeros_like(labels, dtype=tf.bool)
-		# 使用索引更新掩码
-		all_position: tf.Tensor = tf.concat([output, minority[:length]], axis=0)
-		mask: tf.Tensor = tf.tensor_scatter_nd_update(
-			mask,
-			all_position,  # 需要置为True的坐标（形状为[N, D]）
-			tf.ones([tf.shape(all_position)[0]], dtype=tf.bool),  # 填充True值
-		)
-		positions: tf.Tensor = tf.cast(mask, tf.float32)
-		loss: tf.Tensor = tf.multiply(loss, positions)
-		return loss
-	
-	@staticmethod
-	def _maskoutput(
+	def _mask_sample(
 			config,
 			logits: tf.Tensor,
 			labels: tf.Tensor,) -> tuple[tf.Tensor, tf.Tensor]:
+		import random
 		positive: tf.Tensor = labels == config.focus_label
 		positive: tf.Tensor = tf.where(positive)
 		negative: tf.Tensor = labels != config.focus_label
 		negative: tf.Tensor = tf.where(negative)
+		# ratio: float = random.uniform(1.0, 5.0) * random.choice([0, 1])
+		ratio: float = config.ratio
 		if len(positive) < len(negative):
 			selected_position: tf.Tensor = negative
-			length: float = len(positive) * config.ratio
+			length: float = int(len(positive) * ratio)
 			output: tf.Tensor = positive
 		else:
 			selected_position: tf.Tensor = positive
 			output: tf.Tensor = negative
-			length: float = len(negative) * config.ratio
+			length: float = int(len(negative) * ratio)
 		minority: tf.Tensor = tf.random.shuffle(selected_position)
 		mask: tf.Tensor = tf.zeros_like(labels, dtype=tf.bool)
 		# 使用索引更新掩码
@@ -389,9 +356,17 @@ class GetLoss(keras.layers.Layer):
 		positions: tf.Tensor = tf.cast(mask, tf.float32)
 		logits: tf.Tensor = tf.boolean_mask(logits, positions)
 		labels: tf.Tensor = tf.boolean_mask(labels, positions)
-		"""
-		logits: tf.Tensor = tf.multiply(logits, positions)
-		labels: tf.Tensor = tf.multiply(labels, positions)
-		"""
 		return logits, labels
+	
+	@staticmethod
+	def _mask_focus(input_ids: tf.Tensor, focus: list[str]) -> tf.Tensor:
+		token: dict = FullTokenizer().get_vocab()
+		focus_token: list = []
+		for res in focus:
+			assert res in token.keys(), f"this {res} is not in the vocabulary"
+			focus_token.append(token[res.upper()])
+		focus_token: list = tf.expand_dims(tf.cast(list(map(int, focus_token)), tf.float32), axis=0)
+		output: tf.Tensor = tf.equal(tf.expand_dims(input_ids, axis=-1), focus_token)
+		output: tf.Tensor = tf.reduce_any(output, axis=-1)
+		return tf.cast(output, tf.int32)
 	

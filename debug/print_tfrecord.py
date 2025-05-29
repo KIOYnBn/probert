@@ -6,8 +6,8 @@ tf.config.run_functions_eagerly(True)
 def main() -> None:
 	config = Config()
 	tfrecord_path = '../data_make/data/target'
-	target_name = 'ca'
-	file_path: str = f'{tfrecord_path}/{target_name}/length/train.tfrecord'
+	target_name = 'na'
+	file_path: str = f'{tfrecord_path}/{target_name}/reduce/type1+size2/train.tfrecord'
 	tfrecord_files = [file_path]
 	dataset = tf.data.TFRecordDataset(tfrecord_files)
 
